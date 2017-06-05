@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdalign.h>
 
 #define u8 uint8_t
 #define u16 uint16_t
@@ -36,6 +37,9 @@
     ((((u64) getle32(d+4))<<32) | ((u64) getle32(d)))
 #define align(v,a) \
     (((v) % (a)) ? ((v) + (a) - ((v) % (a))) : (v))
+
+// Shorthand macro.
+#define STATIC_ASSERT(...) _Static_assert((__VA_ARGS__), #__VA_ARGS__)
 
 // GodMode9 / SafeMode9 ("flavor" / splash screen)
 #ifndef SAFEMODE
