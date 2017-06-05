@@ -3,6 +3,7 @@
 #include "sha.h"
 #include "aes.h"
 #include "itcm.h"
+#include "i2c.h"
 
 #define VFLAG_READ_ONLY     (1UL<<26)
 #define VFLAG_CALLBACK      (1UL<<27)
@@ -37,13 +38,16 @@ typedef int ReadWriteVMemFileCallback(const VirtualFile* vfile, bool writing, vo
 
 enum VMemCallbackType {
     VMEM_CALLBACK_OTP_DECRYPTED,
+    VMEM_CALLBACK_MCU_REGISTERS,
     VMEM_NUM_CALLBACKS
 };
 
 ReadWriteVMemFileCallback ReadWriteVMemOTPDecrypted;
+ReadWriteVMemFileCallback ReadWriteVMemMCURegisters;
 
 static ReadWriteVMemFileCallback* const vMemCallbacks[] = {
     ReadWriteVMemOTPDecrypted,
+    ReadWriteVMemMCURegisters,
 };
 STATIC_ASSERT(sizeof(vMemCallbacks) / sizeof(vMemCallbacks[0]) == VMEM_NUM_CALLBACKS);
 
@@ -65,7 +69,10 @@ static const VirtualFile vMemFileTemplates[] = {
     // { "bootrom_unp.mem"  , 0xFFFF0000, 0x00008000, 0xFF, 0 }
 
     // Custom callback implementations.
+    // Keyslot field has arbitrary meaning, and may not actually be a keyslot.
     { "otp_dec.mem"      , VMEM_CALLBACK_OTP_DECRYPTED, 0x00000100, 0x11, VFLAG_CALLBACK | VFLAG_READ_ONLY | VFLAG_OTP | VFLAG_BOOT9 },
+    { "mcu_3ds_regs.bin" , VMEM_CALLBACK_MCU_REGISTERS, 0x00000100, I2C_DEV_MCU, VFLAG_CALLBACK | VFLAG_READ_ONLY },
+    { "mcu_dsi_regs.bin" , VMEM_CALLBACK_MCU_REGISTERS, 0x00000100, I2C_DEV_MCU_TWL, VFLAG_CALLBACK | VFLAG_READ_ONLY },
 };
 
 static bool IsBoot9Available() {
@@ -118,6 +125,30 @@ int ReadWriteVMemOTPDecrypted(const VirtualFile* vfile, bool writing, void* buff
     use_aeskey(0x11);
     cbc_decrypt(otp_mem, otp_local, sizeof(Otp) / 0x10, AES_CNT_TITLEKEY_DECRYPT_MODE, otp_iv);
     memcpy(buffer, otp_local + offset, count);
+    return 0;
+}
+
+// Read MCU registers.
+int ReadWriteVMemMCURegisters(const VirtualFile* vfile, bool writing, void* buffer, u64 offset, u64 count) {
+    // While it is possible to write MCU registers, that's a good way to
+    // brick your system in a way that even ntrboothax can't fix.
+    if (writing)
+        return 1;
+
+    if (0u + offset + count < offset)
+        return 1;
+    if (offset + count > vfile->size)
+        return 1;
+
+    // The table puts the device ID into the keyslot field.
+    u8 device = (u8) vfile->keyslot;
+
+    // Read the data.
+    u8* dest = (u8*) buffer;
+    for (u64 x = 0; x < count; ++x) {
+        dest[x] = i2cReadRegister(device, (u8) (offset + x));
+    }
+
     return 0;
 }
 
