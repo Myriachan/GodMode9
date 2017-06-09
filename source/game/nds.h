@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "region.h"
 
 // size of the icon struct:
 // see: http://problemkaputt.de/gbatek.htm#dscartridgeicontitle
@@ -18,14 +19,6 @@
 #define TWL_UNITCODE_NTR    0x00
 #define TWL_UNITCODE_TWLNTR 0x02
 #define TWL_UNITCODE_TWL    0x03
-
-#define TWL_REGION_JAP      0x01
-#define TWL_REGION_USA      0x02
-#define TWL_REGION_EUR      0x04
-#define TWL_REGION_AUS      0x08
-#define TWL_REGION_CHN      0x10
-#define TWL_REGION_KOR      0x20
-#define TWL_REGION_FREE     0xFFFFFFFF
 
 // see: http://problemkaputt.de/gbatek.htm#dscartridgeicontitle
 typedef struct {
