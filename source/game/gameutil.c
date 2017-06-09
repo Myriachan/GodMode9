@@ -1906,7 +1906,7 @@ u32 GetGoodName(char* name, const char* path, bool quick) {
                 char region[8] = { 0 };
                 if (twl->region_flags == TWL_REGION_FREE) snprintf(region, 8, "W");
                 snprintf(region, 8, "%s%s%s%s%s",
-                    (twl->region_flags & REGION_MASK_JAP) ? "J" : "",
+                    (twl->region_flags & REGION_MASK_JPN) ? "J" : "",
                     (twl->region_flags & REGION_MASK_USA) ? "U" : "",
                     (twl->region_flags & REGION_MASK_EUR) ? "E" : "",
                     (twl->region_flags & REGION_MASK_CHN) ? "C" : "",
@@ -1934,7 +1934,7 @@ u32 GetGoodName(char* name, const char* path, bool quick) {
             char region[8] = { 0 };
             if (smdh->region_lockout == SMDH_REGION_FREE) snprintf(region, 8, "W");
             snprintf(region, 8, "%s%s%s%s%s%s",
-                (smdh->region_lockout & REGION_MASK_JAP) ? "J" : "",
+                (smdh->region_lockout & REGION_MASK_JPN) ? "J" : "",
                 (smdh->region_lockout & REGION_MASK_USA) ? "U" : "",
                 (smdh->region_lockout & REGION_MASK_EUR) ? "E" : "",
                 (smdh->region_lockout & REGION_MASK_CHN) ? "C" : "",

@@ -5,7 +5,7 @@
 
 // size of the icon struct:
 // see: http://problemkaputt.de/gbatek.htm#dscartridgeicontitle
-// v0x0001 -> 0x0840 byte (contains JAP, USA, FRE, GER, ITA, ESP titles)
+// v0x0001 -> 0x0840 byte (contains JPN, USA, FRE, GER, ITA, ESP titles)
 // v0x0002 -> 0x0940 byte (adds CHN title)
 // v0x0003 -> 0x0A40 byte (adds KOR title) 
 // v0x0103 -> 0x23C0 byte (adds TWL animated icon data)
