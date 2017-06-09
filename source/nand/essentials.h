@@ -37,6 +37,7 @@ typedef struct {
     u8 unknown;
     char serial[0xF];
 } __attribute__((packed)) SecureInfo;
+STATIC_ASSERT(sizeof(SecureInfo) == 0x111);
 
 // includes all essential system files
 // (this is of our own making)
