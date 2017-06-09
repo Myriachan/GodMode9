@@ -8,8 +8,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#define countof(x) (sizeof(x) / sizeof((x)[0]))
-
 // Table of system models.
 // https://www.3dbrew.org/wiki/Cfg:GetSystemModel#System_Model_Values
 static const struct {
