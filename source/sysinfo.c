@@ -1,9 +1,12 @@
 #include "common.h"
 #include "i2c.h"
+#include "itcm.h"
 #include "region.h"
 #include "unittype.h"
 #include "vff.h"
 #include "nand/essentials.h" // For SecureInfo
+#include <ctype.h>
+#include <limits.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -48,11 +51,17 @@ typedef struct _SysInfo {
     // From hardware information.
     char model[15 + 1];
     char product_code[3 + 1];
+    // From OTP.
+    char soc_date[19 + 1];
     // From SecureInfo_A/B
     char sub_model[15 + 1];
     char serial[15 + 1];
     char system_region[15 + 1];
     char sales_region[15 + 1];
+    // From twln:
+    char assembly_date[19 + 1];
+    char original_firmware[15 + 1];
+    char preinstalled_titles[16][4];
 } SysInfo;
 
 
@@ -74,6 +83,38 @@ void GetSysInfo_Hardware(SysInfo* info, char nand_drive) {
             strncpy(info->product_code, s_modelNames[info->int_model].product_code, countof(info->product_code));
         }
     }
+}
+
+
+// Read OTP.
+void GetSysInfo_OTP(SysInfo* info, char nand_drive) {
+    (void) nand_drive;
+
+    strncpy(info->soc_date, "<unknown>", countof(info->soc_date));
+
+    const Otp* otp = &ARM9_ITCM->otp;
+
+    // SoC manufacturing date, we think.
+    do {
+        unsigned year = otp->timestampYear + 1900;
+
+        if (year < 2000)
+            break;
+        if ((otp->timestampMonth == 0) || (otp->timestampMonth > 12))
+            break;
+        if ((otp->timestampDay == 0) || (otp->timestampDay > 31))
+            break;
+        if (otp->timestampHour >= 24)
+            break;
+        if (otp->timestampMinute >= 60)
+            break;
+        if (otp->timestampSecond >= 61)
+            break;
+
+        snprintf(info->soc_date, countof(info->soc_date), "%04u/%02hhu/%02hhu %02hhu:%02hhu:%02hhu",
+            year, otp->timestampMonth, otp->timestampDay,
+            otp->timestampHour, otp->timestampMinute, otp->timestampSecond);
+    } while (false);
 }
 
 
@@ -210,6 +251,265 @@ void GetSysInfo_SecureInfo(SysInfo* info, char nand_drive) {
 }
 
 
+// Log file parser helper function.
+void SysInfo_ParseText(FIL* file, void (*line_parser)(void*, const char*, size_t), void* context) {
+    // Buffer we store lines into.
+    char buffer[512];
+    UINT filled = 0;
+    bool skip_line = false;
+    bool prev_cr = false;
+
+    // Main loop.
+    for (;;) {
+        // How much to read now.
+        UINT now = (UINT) (sizeof(buffer) - filled);
+
+        // If now is zero, it means that our buffer is full.
+        if (now == 0) {
+            // Reset the buffer, but skip this line.
+            filled = 0;
+            skip_line = true;
+            continue;
+        }
+
+        // Read this chunk.
+        UINT actual = 0;
+        if (fvx_read(file, &buffer[filled], now, &actual) != FR_OK)
+            break;
+
+        // actual == 0 means read past end of file.
+        if (actual == 0)
+            break;
+
+        filled += actual;
+
+        // Search for line terminators.
+        char* current = buffer;
+        UINT remaining = filled;
+        for (;;) {
+            char* carriage = memchr(current, '\r', remaining);
+            char* newline = memchr(current, '\n', remaining);
+
+            // If neither is present, we have an unfinished line.
+            if (!carriage && !newline) {
+                // Move stuff down and return to the outer loop.
+                memmove(buffer, current, remaining);
+                filled = remaining;
+                break;
+            }
+
+            // We have a complete line, yay.
+            // Use whichever separator came first.
+            // Comparing non-null pointers to null is undefined behavior,
+            // hence the if maze here.
+            char* found;
+            if (!carriage)
+                found = newline;
+            else if (!newline)
+                found = carriage;
+            else
+                found = min(carriage, newline);
+
+            size_t length = (size_t) (found - current);
+
+            // If this isn't an empty line between a carriage return and
+            // a linefeed, it's a real line.  However, we might need to
+            // skip lines if they overflow the buffer.
+            if (!skip_line && ((length != 0) || (found != newline) || !prev_cr)) {
+                // Report this line.
+                line_parser(context, current, length);
+            }
+
+            // Clear the skip_line flag and set prev_cr as needed.
+            skip_line = false;
+            prev_cr = (found == carriage);
+
+            // Move on from this line.
+            remaining -= (found + 1) - current;
+            current = found + 1;
+        }
+    }
+
+    // If we have a partial line at this point, report it as a line.
+    if (filled > 0) {
+        line_parser(context, buffer, filled);
+    }
+}
+
+
+// Helper function.
+bool SysInfo_IsOnlyDigits(const char* str, size_t length) {
+    for (; length > 0; ++str, --length) {
+        if (!isdigit((unsigned char) *str)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+// Split a comma-delimited list.  Used for twln:/sys/product.log.
+unsigned SysInfo_CommaSplit(const char** starts, size_t* lengths, unsigned max_entries, const char* line, size_t line_length) {
+    unsigned index = 0;
+
+    if (max_entries == 0)
+        return 0;
+
+    for (;;) {
+        // Search for the next comma.
+        const char* comma = memchr(line, ',', line_length);
+
+        starts[index] = line;
+
+        // If no comma, we're done.
+        // If we maxed out the entry list, put the rest of the line
+        // into the last entry.
+        if (!comma || (index == max_entries - 1)) {
+            lengths[index] = line_length;
+            return index + 1;
+        }
+
+        // Add this entry.
+        lengths[index] = (size_t) (comma - line);
+        ++index;
+
+        // Skip over the comma.
+        line_length -= (size_t) (1 + comma - line);
+        line = comma + 1;
+    }
+}
+
+
+// Line parser for twln:/sys/log/inspect.log.
+void SysInfoLineParser_InspectLog(void* context, const char* line, size_t length) {
+    SysInfo* info = (SysInfo*) context;
+
+    static const char s_commentUpdated[] = "CommentUpdated=";
+
+    if (length < countof(s_commentUpdated) - 1)
+        return;
+    if (memcmp(line, s_commentUpdated, sizeof(s_commentUpdated) - sizeof(s_commentUpdated[0])) != 0)
+        return;
+
+    length -= countof(s_commentUpdated) - 1;
+    line += countof(s_commentUpdated) - 1;
+    length = min(length, countof(info->assembly_date) - 1);
+
+    memcpy(info->assembly_date, line, length * sizeof(*line));
+    info->assembly_date[length] = '\0';
+}
+
+
+// Line parser for twln:/sys/log/product.log.
+// NOTE: product.log is parsed linearly so that only the last entry in the file
+// takes effect.  This is important for 3DS's that were reflashed by Nintendo -
+// we want whichever information is the latest.
+void SysInfoLineParser_ProductLog(void* context, const char* line, size_t length) {
+    SysInfo* info = (SysInfo*) context;
+
+    const char* entries[10];
+    size_t entry_lengths[countof(entries)];
+
+    unsigned entry_count = SysInfo_CommaSplit(entries, entry_lengths, countof(entries), line, length);
+
+    // Ignore lines that don't have at least 2 entries.
+    if (entry_count < 2)
+        return;
+
+    // Ignore lines in which the first entry isn't a number.
+    if ((entry_lengths[0] == 0) || !SysInfo_IsOnlyDigits(entries[0], entry_lengths[0]))
+        return;
+
+    // Look for entries we want.
+    if ((entry_lengths[1] == 8) && (memcmp(entries[1], "DataList", 8) == 0)) {
+        // Original firmware version is written here.
+        if ((entry_count < 8) || (entry_lengths[2] != 2) || (memcmp(entries[2], "OK", 2) != 0))
+            return;
+
+        // Format: nup:20U cup:9.0.0 preInstall:RA1
+        const char* verinfo = entries[7];
+        size_t remaining = entry_lengths[7];
+        if ((remaining < 4) || (memcmp(verinfo, "nup:", 4) != 0))
+            return;
+
+        verinfo += 4;
+        remaining -= 4;
+
+        // Find whitespace afterward.
+        const char* nup_start = verinfo;
+        while ((remaining > 0) && (*verinfo != ' ')) {
+            ++verinfo;
+            --remaining;
+        }
+        const char* nup_end = verinfo;
+
+        // Skip whitespace until cup:.
+        while ((remaining > 0) && (*verinfo == ' ')) {
+            ++verinfo;
+            --remaining;
+        }
+
+        if ((remaining < 4) || (memcmp(verinfo, "cup:", 4) != 0))
+            return;
+
+        verinfo += 4;
+        remaining -= 4;
+
+        // Find whitespace afterward.
+        const char* cup_start = verinfo;
+        while ((remaining > 0) && (*verinfo != ' ')) {
+            ++verinfo;
+            --remaining;
+        }
+        const char* cup_end = verinfo;
+
+        // Calculate lengths.
+        size_t nup_length = (size_t) (nup_end - nup_start);
+        size_t cup_length = (size_t) (cup_end - cup_start);
+
+        if (nup_length + cup_length < nup_length)
+            return;
+        if (nup_length + cup_length > SIZE_MAX - 1 - 1)
+            return;
+
+        if (cup_length + 1 + nup_length + 1 > countof(info->original_firmware))
+            return;
+
+        memcpy(&info->original_firmware[0], cup_start, cup_length);
+        info->original_firmware[cup_length] = '-';
+        memcpy(&info->original_firmware[cup_length + 1], nup_start, nup_length);
+        info->original_firmware[cup_length + 1 + nup_length] = '\0';
+    }
+}
+
+
+// Get information from the factory setup log.
+void GetSysInfo_TWLN(SysInfo* info, char nand_drive) {
+    char twln_drive = (char) (nand_drive + 1);
+
+    static char inspect_path[] = " :/sys/log/inspect.log";
+    static char product_path[] = " :/sys/log/product.log";
+
+    inspect_path[0] = twln_drive;
+    product_path[0] = twln_drive;
+
+    strncpy(info->assembly_date, "<unknown>", countof(info->assembly_date));
+    strncpy(info->original_firmware, "<unknown>", countof(info->assembly_date));
+
+    FIL file;
+    if (fvx_open(&file, inspect_path, FA_READ | FA_OPEN_EXISTING) == FR_OK) {
+        SysInfo_ParseText(&file, SysInfoLineParser_InspectLog, info);
+        fvx_close(&file);
+    }
+
+    if (fvx_open(&file, product_path, FA_READ | FA_OPEN_EXISTING) == FR_OK) {
+        SysInfo_ParseText(&file, SysInfoLineParser_ProductLog, info);
+        fvx_close(&file);
+    }
+}
+
+
 void MeowPrintf(FIL* file, const char* format, ...)
 {
     char buffer[256];
@@ -225,11 +525,22 @@ void MeowPrintf(FIL* file, const char* format, ...)
 }
 
 
+/*void MeowLog(void* f, const char* line, size_t size)
+{
+    FIL* file = (FIL*) f;
+    UINT written;
+    fvx_write(file, "|", 1, &written);
+    fvx_write(file, line, (UINT) size, &written);
+    fvx_write(file, "|\r\n", 3, &written);
+}*/
+
+
 void MyriaSysinfo(void) {
-(void) s_modelNames;
     SysInfo info;
     GetSysInfo_Hardware(&info, '1');
+    GetSysInfo_OTP(&info, '1');
     GetSysInfo_SecureInfo(&info, '1');
+    GetSysInfo_TWLN(&info, '1');
 
     FIL meow;
     if (fvx_open(&meow, "0:/meow.txt", FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
@@ -240,6 +551,16 @@ void MyriaSysinfo(void) {
     MeowPrintf(&meow, "Serial: %s\r\n", info.serial);
     MeowPrintf(&meow, "Region (system): %s\r\n", info.system_region);
     MeowPrintf(&meow, "Region (sales): %s\r\n", info.sales_region);
+    MeowPrintf(&meow, "SoC manufacturing date: %s\r\n", info.soc_date);
+    MeowPrintf(&meow, "System assembly date: %s\r\n", info.assembly_date);
+    MeowPrintf(&meow, "Original firmware: %s\r\n", info.original_firmware);
+
+/*    FIL log;
+    if (fvx_open(&log, "2:/sys/log/product.log", FA_READ | FA_OPEN_EXISTING) == FR_OK) {
+        MeowPrintf(&meow, "opened product.log\r\n");
+        SysInfo_ParseText(&log, MeowLog, &meow);
+        fvx_close(&log);
+    }*/
 
     fvx_close(&meow);
 }
